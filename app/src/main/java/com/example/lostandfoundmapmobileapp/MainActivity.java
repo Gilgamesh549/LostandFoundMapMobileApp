@@ -76,6 +76,7 @@ public class MainActivity extends ComponentActivity {
     private double selectedLatitude = Double.NaN;
     private double selectedLongitude = Double.NaN;
     private int pendingLocationTarget = LOCATION_FOR_HOME;
+    private boolean updatingLocationText;
 
     private final ActivityResultLauncher<String[]> permissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
@@ -150,9 +151,9 @@ public class MainActivity extends ComponentActivity {
         locationAutoCompleteText.setOnItemClickListener((parent, view, position, id) -> {
             if (position >= 0 && position < addressChoices.size()) {
                 AddressChoice choice = addressChoices.get(position);
+                setLocationTextWithoutClearingCoordinates(choice.label);
                 selectedLatitude = choice.latitude;
                 selectedLongitude = choice.longitude;
-                locationAutoCompleteText.setText(choice.label, false);
                 updateFormCoordinateText();
             }
         });
@@ -163,6 +164,9 @@ public class MainActivity extends ComponentActivity {
 
             @Override
             public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (updatingLocationText) {
+                    return;
+                }
                 String query = s.toString().trim();
                 selectedLatitude = Double.NaN;
                 selectedLongitude = Double.NaN;
@@ -337,7 +341,7 @@ public class MainActivity extends ComponentActivity {
             } catch (IOException ignored) {
             }
             String finalLabel = label;
-            mainHandler.post(() -> locationAutoCompleteText.setText(finalLabel, false));
+            mainHandler.post(() -> setLocationTextWithoutClearingCoordinates(finalLabel));
         });
     }
 
@@ -352,18 +356,67 @@ public class MainActivity extends ComponentActivity {
             Toast.makeText(this, "Please complete all advert fields.", Toast.LENGTH_SHORT).show();
             return;
         }
+
+        String type = lostRadioButton.isChecked() ? "Lost" : "Found";
         if (Double.isNaN(selectedLatitude) || Double.isNaN(selectedLongitude)) {
-            Toast.makeText(this, "Please choose a location suggestion or use current location.", Toast.LENGTH_LONG).show();
+            findCoordinatesThenSave(type, name, phone, description, date, locationLabel);
             return;
         }
 
-        String type = lostRadioButton.isChecked() ? "Lost" : "Found";
-        items.add(new LostFoundItem(type, name, phone, description, date, locationLabel, selectedLatitude, selectedLongitude));
+        saveAdvertWithCoordinates(type, name, phone, description, date, locationLabel, selectedLatitude, selectedLongitude);
+    }
+
+    private void findCoordinatesThenSave(String type, String name, String phone, String description, String date, String locationLabel) {
+        Toast.makeText(this, "Finding location coordinates...", Toast.LENGTH_SHORT).show();
+        executorService.execute(() -> {
+            Address matchedAddress = null;
+            try {
+                List<Address> addresses = geocoder.getFromLocationName(locationLabel, 1);
+                if (addresses != null && !addresses.isEmpty()) {
+                    Address address = addresses.get(0);
+                    if (address.hasLatitude() && address.hasLongitude()) {
+                        matchedAddress = address;
+                    }
+                }
+            } catch (IOException ignored) {
+            }
+
+            Address finalMatchedAddress = matchedAddress;
+            mainHandler.post(() -> {
+                if (finalMatchedAddress == null) {
+                    Toast.makeText(this, "Location coordinates were not found. Try a more specific address or use current location.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                double latitude = finalMatchedAddress.getLatitude();
+                double longitude = finalMatchedAddress.getLongitude();
+                selectedLatitude = latitude;
+                selectedLongitude = longitude;
+                String resolvedLabel = buildAddressLabel(finalMatchedAddress);
+                setLocationTextWithoutClearingCoordinates(resolvedLabel);
+                updateFormCoordinateText();
+                saveAdvertWithCoordinates(type, name, phone, description, date, resolvedLabel, latitude, longitude);
+            });
+        });
+    }
+
+    private void saveAdvertWithCoordinates(String type, String name, String phone, String description, String date,
+                                           String locationLabel, double latitude, double longitude) {
+        items.add(new LostFoundItem(type, name, phone, description, date, locationLabel, latitude, longitude));
         saveItems();
         clearForm();
         renderItemList();
         showHome();
         Toast.makeText(this, "Advert saved.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void setLocationTextWithoutClearingCoordinates(String locationText) {
+        updatingLocationText = true;
+        try {
+            locationAutoCompleteText.setText(locationText, false);
+        } finally {
+            updatingLocationText = false;
+        }
     }
 
     private void clearForm() {
